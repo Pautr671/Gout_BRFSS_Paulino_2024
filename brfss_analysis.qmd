@@ -1,0 +1,448 @@
+---
+title: "The Epidemiology of Gout on Guam and the impact of areca nut"
+authors: 
+  - name: Tristan Paulino
+    affiliation: University of Otago, University of Guam
+  - name: Anna Gosling
+    affiliation: University of Otago
+  - name: Lisa Matisoo-Smith
+    affiliation: University of Otago
+  - name: Frank Camacho
+    affiliation: University of Guam
+  - name: Yvette Paulino
+    affiliation: University of Guam
+format: 
+  html:
+    code-fold: true
+    
+bibliography: references.bib
+editor: visual
+---
+
+# Introduction
+
+This documentation is supplementary to the manuscript draft "*The Epidemiology of Gout on Guam and the impact of areca nut*" which replicates the analysis, results, and displays the respective statistic tables. As there is very limited information on population estimates of gout on Guam, and that a Pacific-specific behavior such as areca nut/betel nut use is associated with activation of the NLRP3 inflammasome (same inflammation pathway as gout) - we decided to do the following:
+
+1.  Estimate the current prevalence of gout in Guam utilizing the 2020 behavioral risk factor surveillance system (BRFSS).
+
+2.  Describe the relationship between areca nut (betel nut) and gout.
+
+The BRFSS survey is a telephone-based survey conducted by the US CDC which attempts to capture population-based health data. This survey does not collect biospecimen when compared to other CDC surveys such as NHIST or NHANES.
+
+### Step 1: Calling the libraries
+
+
+
+
+```{r library, echo=TRUE, message=FALSE}
+library(tidyverse)
+library(haven)
+library(survey) 
+library(gtsummary)
+library(forcats)
+```
+
+```{r include=FALSE}
+pkgs <- installed.packages() %>% as_tibble()
+```
+
+### Step 2: Importing SPSS dataset file into R using the haven package
+
+The provided data is in a SPSS/ .sav format. We used the `haven` (v`r pkgs[pkgs$Package == "haven", "Version"]`) package [@haven2023] to read the BRFSS dataset into R.
+
+| Variable Name in BRFSS | Description                    | Question                                                              |
+|-------------------|-------------------|----------------------------------|
+| v3                     | Household Density Stratum Code | \-                                                                    |
+| v4                     | Primary Sampling Unit          | \-                                                                    |
+| v75                    | Final Weight                   | \-                                                                    |
+| v140                   | Age stratified in 6 groups     | \-                                                                    |
+| SEXVAR                 | Respondent Sex                 | \-                                                                    |
+| Ethnic1                | Ethnicity                      | \-                                                                    |
+| v145                   | Education Level Category       | \-                                                                    |
+| GoutDiag               | Age of Gout Diagnosis          | "How old were you when you were first diagnosed with gout?"           |
+| GoutMeds               | Gout Medication Use            | "When you experience a gout flare, how often do you take medication?" |
+| BetChw2                | Current areca/betel nut use    | "Do you currently chew betel nut everyday, somedays, or note at all?" |
+
+```{r, echo=TRUE, message=FALSE}
+guam_data <- read_sav("GU20FINLvSplit_V3.SAV") %>% 
+  select(v3,
+         v4,
+         v75,
+         v140,
+         SEXVAR,
+         Ethnic1,
+         v145,
+         GoutDiag,
+         GoutMeds,
+         BetChw2
+  )
+```
+
+### Step 3: Data cleaning prior to analyses
+
+Unknown and missing value in a variable were treated as "*NA*" and were excluded from all analyses.
+
+```{r, echo=TRUE, message=FALSE}
+
+
+guam_data <- guam_data %>% mutate(
+  # Recoding Ethnicity
+  ethnicity = factor(
+    case_when(
+      Ethnic1 %in% c(1, 15) ~ "Micronesian (CHamoru)",
+      Ethnic1 == 2 ~ "Filipino",
+      Ethnic1 %in% c(9:14) ~ "Micronesian (Other than CHamoru)",
+      TRUE ~ "Other"
+    ), levels = c("Micronesian (CHamoru)", 
+                  "Micronesian (Other than CHamoru)",
+                  "Filipino",
+                  "Other")),
+  # Recoding v145 into Educational categories
+  edu_status = factor(
+    case_when(
+      v145 %in% c(1, 2) ~ "High School or Below",
+      v145 == 3 ~ "Some College",
+      v145 == 4 ~ "College Graduate or higher",
+      v145 == 9 ~ NA_character_
+    ), levels = c("High School or Below", 
+                  "Some College",
+                  "College Graduate or higher")),
+  # Gout Status - Removed extreme outliers where diagnosis was less than 18 years old.
+  gout_status = factor(case_when(
+    GoutDiag < 18 | is.na(GoutDiag) ~ NA_integer_,
+    GoutDiag %in% c(96, 97, 99) ~ 0,
+    TRUE ~ 1), levels = c(0, 1), labels = c("No", "Yes")),
+  # Gout Med recode
+  gout_med = case_when(
+    GoutMeds %in% c(2,3) ~ "Sometimes", 
+    GoutMeds %in% c(4,5) ~ "Regularly",
+    GoutMeds == 1 ~ "Never", 
+    GoutMeds %in% c(7,9) ~ NA_character_),
+  # Recoding v140 into age categories
+  age = case_when(
+    v140 == 1 ~ "18 to 24",
+    v140 == 2 ~ "25 to 34",
+    v140 == 3 ~ "35 to 44",
+    v140 == 4 ~ "45 to 54",
+    v140 == 5 ~ "55 to 64",
+    v140 == 6 ~ "65 or older" 
+  ),
+  # Create age variable for logistic regression only
+  # combine age groups into 2 categories: 18 to 44, and 45+
+  age_logit = factor(ifelse(v140 %in% c(1, 2, 3), 1, 2), levels = c(1, 2), labels = c("18 to 44", "45 or older")),
+  # Recode betel nut use
+  # 1 and 2 -> "Yes
+  # Anything else except NA -> "No"
+  betel_nut = factor(case_when(
+    is.na(BetChw2) ~ NA_real_,
+    BetChw2 %in% c(1, 2) ~ 1,
+    TRUE ~ 0),  levels = c(0, 1, NA), labels = c("No", "Yes")),
+  # Recode sex variable
+  sex = factor(SEXVAR, levels = c(1, 2), labels = c("Male", "Female"))
+  
+)
+
+
+```
+
+### Step 4: Table 1.0 -- Demographic Description
+
+Using the `survey` (v`r pkgs[pkgs$Package == "survey", "Version"]`) package [@lumley2004], we created survey objects to compute weighted frequencies of sample demographic variables. Tables were created using the `gtsummary` (v`r pkgs[pkgs$Package == "gtsummary", "Version"]`) package [@gtsummary2021]. Stratum code, Sampling unit, and final weight described in `Step 2` were used as parameters for each survey object.\
+\
+The following information were reported for Table 1:
+
+1.  Unweighted sample size (N)
+2.  Unweighted sample (n)
+3.  Weighted percent/proportion (%)
+
+```{r, echo=TRUE, message=TRUE}
+# Creates the dataframe of demographic variables of interest 
+table1_df <- guam_data %>% 
+  select(
+    v3,
+    v4,
+    v75,
+    age,
+    edu_status,
+    sex,
+    ethnicity,
+  ) 
+
+
+# Creates survey object, specifies variables vs. weight
+table1_survey <- svydesign(
+  ids = ~v4,
+  strata = ~v3,
+  weights = ~v75,
+  data = table1_df
+)
+
+# Creates Frequency Table of variables of interest
+table1 <- tbl_svysummary(table1_survey,
+                         by = NULL,
+                         digits = list(
+                           age ~ c(0,1),
+                           sex ~ c(0,1),
+                           ethnicity ~ c(0,1),
+                           edu_status ~ c(0,1)
+                         ),
+                         include = c(age, sex, ethnicity, edu_status),    
+                         label = list(
+                           age ~ "Age",
+                           sex ~ "Sex",
+                           ethnicity ~ "Ethnicity",
+                           edu_status ~ "Education"),
+                         statistic = list(
+                           all_categorical() ~ "{n_unweighted} ({p}%)"
+                         ),
+                         missing = "no"
+) %>% 
+  add_ci() %>%
+  modify_header(
+    update = list(
+      stat_0 ~ "**Overall** N = {n_unweighted}")
+  ) %>%
+  as_gt() %>%
+  gt::tab_header("Table 1: Demographic Description, Guam BRFSS 2020") %>%
+  gt::tab_options(
+    table.font.size = "small",
+    data_row.padding = gt::px(1)
+  )
+```
+
+```{r, echo=FALSE, message=FALSE}
+table1
+```
+
+### Step 5: Table 2.0 Gout Prevalence, Medicine Use, and Areca Nut
+
+```{r, echo=TRUE, message=FALSE}
+
+table2_df <- guam_data %>% 
+  select(
+    v3,
+    v4,
+    v75,
+    gout_status,
+    gout_med,
+    betel_nut
+  )
+
+table2_survey <- svydesign(
+  ids = ~v4,
+  strata = ~v3,
+  weights = ~v75,
+  data = table2_df
+)
+
+table2 <- tbl_svysummary(table2_survey,
+                         by = NULL,
+                         include = c(gout_status,gout_med,betel_nut),  
+                         label = list(
+                           gout_status ~ "Gout",
+                           gout_med ~ "Gout Medication Use",
+                           betel_nut ~ "Areca Nut Use"
+                         ),
+                         statistic = list(
+                           all_categorical() ~ "{n_unweighted} ({p}%)"),
+                         missing = "no"
+) %>% 
+  add_ci() %>% 
+  modify_header(
+    update = list(
+      stat_0 ~ "**Overall** N = {n_unweighted}")
+  ) %>% 
+  as_gt() %>%
+  gt::tab_header("Table 2: Gout Status & Medicine Use, Guam BRFSS 2020") %>% 
+  gt::tab_options(
+    table.font.size = "small",
+    data_row.padding = gt::px(1)
+  )
+
+```
+
+```{r, echo=FALSE, message=FALSE}
+table2
+```
+
+### Step 6: Table 3.0 Regression Analysis
+
+```{r, echo=TRUE, message=FALSE}
+
+
+# Creates the dataframe of betel nut use and gout variables plus BRFSS weights
+# Convert betel_nut to a factor if it's not already
+table3_df <- guam_data %>%
+  select(
+    v3,
+    v4,
+    v75,
+    age_logit,
+    sex,
+    gout_status,
+    betel_nut,
+    ethnicity
+  ) 
+
+```
+
+
+```{r}
+#| code-fold: show
+#| warning: false
+
+# Creates the survey object needed for the logistic regression 
+table3_survey <- svydesign(
+  ids = ~v4,
+  strata = ~v3,
+  weights = ~v75,
+  data = table3_df
+)
+
+# Fit logistic regression model
+logit_model <- svyglm(
+  formula = gout_status ~ betel_nut,
+  design = table3_survey,
+  family = binomial(link = "logit"),
+  na.action = na.omit
+)
+
+# model warning of: Warning in eval(family$initialize): non-integer #successes in a binomial glm!
+```
+
+
+```{r}
+#| code-fold: show
+#| warning: false
+
+# Creates table object 
+logit_table <- tbl_regression(logit_model, 
+                              exponentiate = TRUE,
+                              show_single_row = betel_nut,
+                              label = list(
+                                betel_nut ~ "Betel Nut Use"
+                              ),
+                              pvalue_fun= ~ style_pvalue(.x, digits = 3)
+) 
+
+### Adjust regression model by age and Sex and ethnicity
+logit_adjusted <- svyglm(
+  formula = gout_status ~ betel_nut + age_logit + sex + ethnicity,
+  design = table3_survey,
+  family = binomial(link = "logit"),
+  na.action = na.omit
+)
+
+logit_adjusted_table <- tbl_regression(logit_adjusted, 
+                                       exponentiate = TRUE,
+                                       include = c(betel_nut, age_logit, sex, ethnicity),
+                                       show_single_row = betel_nut,
+                                       label = list(
+                                         betel_nut ~ "Betel Nut Use",
+                                         age_logit ~ "Age",
+                                         sex ~ "Sex",
+                                         ethnicity ~ "Ethnicity"
+                                       ),
+                                       pvalue_fun= ~ style_pvalue(.x, digits = 3)
+)
+
+# model warning of: Warning in eval(family$initialize): non-integer #successes in a binomial glm!
+```
+
+```{r}
+##### Combine Regression Tables (Unadjusted & Adjusted)
+table3 <- tbl_merge(
+  tbls = list(logit_table, logit_adjusted_table),
+  tab_spanner = c("**Unadjusted**", "**Adjusted**")
+) %>% 
+  as_gt() %>%
+  gt::tab_header("Table 3: Binary Logistic Regression (Areca Nut Use & Gout)") %>% 
+  gt::tab_options(
+    table.font.size = "small",
+    data_row.padding = gt::px(1)
+  ) %>% 
+  gt::tab_footnote("Regression adjusted by age, sex, and ethnicity.")
+
+```
+
+**Model 1 Description:**
+
+`betel_use` was computed by coding "Everyday" and "Some days" responses as "Yes" to the following question: "Do you currently chew betel nut everyday, somedays, or note at all?". "Not at all" was coded as "No". Unsure responses were treated as *NA*.
+
+`gout_status` was computed by coding the provided age of gout diagnosis as "Yes". There were some outlier age of diagnosed ages of 1, 9, and 17 years old. We decided that any age below 18 may be due to inaccurate data imputation or recall bias and filtered ages accordingly. "Never had gout" response was coded as "No". Unsure responses and missing responses were treated as *NA*.
+
+Model 1 consisted of `betel_use` as the main predictor of `gout_status`.
+
+**Model 2 Description:**
+
+We included common covariates that were previously associated with gout status such as `sex`, `age`, and `ethnicity` in addition to `betel_use`. Male was treated as the reference for `sex`. `age` was computed by re-coding age categories into two group: "18 to 44" and "45 or older". These groups were a composite of the other age group categories. Age was treated as a categorical variable, as the BRFSS dataset **did not** provide the age for each individual participant. Micronesian (CHamoru) was used as the reference for `ethnicity` as it is the predominant population on Guam according to current census estimates.
+
+```{r, echo = FALSE, message= FALSE}
+table3
+```
+
+We can see from Table 3 that even after adjustments to our model, that `betel_use` is not a significant predictor of gout status. Other variables such as `age` and `sex` with the exception of `ethnicity` were strong predictors of `gout_status`. The effects of `age` and `sex` observed in our model is consistent with previous studies. Differences in `ethnicity` effects may be due to population structure on Guam.
+
+### Validating BRFSS weights and weighted frequencies/ proportions
+
+To validate the use of the appropriate `weight` and survey object parameters, we calculated the weighted frequency of alcohol consumption on Guam and compared our results with the BRFSS prevalence data tool on the CDC BRFSS [website](https://nccd.cdc.gov/BRFSSPrevalence/rdPage.aspx?rdReport=DPH_BRFSS.ExploreByLocation&rdProcessAction=&SaveFileGenerated=1&irbLocationType=States&islLocation=66&islState=&islCounty=&islClass=CLASS01&islTopic=TOPIC03&islYear=2020&hidLocationType=States&hidLocation=66&hidClass=CLASS01&hidTopic=TOPIC03&hidTopicName=Alcohol+Consumption&hidYear=2020&irbShowFootnotes=Show&rdICL-iclIndicators=DRNKANY5&iclIndicators_rdExpandedCollapsedHistory=&iclIndicators=DRNKANY5&hidPreviouslySelectedIndicators=&DashboardColumnCount=2&rdShowElementHistory=&rdScrollX=0&rdScrollY=4&rdRnd=25779 "BRFSS_Guam_Prevalence_Tool").
+
+```{r, echo=TRUE, message=FALSE}
+
+# ALCDAY5 = "Alcohol Use Last 30 days"
+
+alcohol <- read_sav("GU20FINLvSplit_V3.SAV") %>% 
+  select(v3,
+         v4,
+         v75,
+         ALCDAY5)
+
+# Recode "Unsure" and "refused to answer" responses to NA
+alcohol$ALCDAY5 <- ifelse(alcohol$ALCDAY5 %in% c(777, 999), NA, alcohol$ALCDAY5)
+alcohol$ALCDAY5 <- ifelse(alcohol$ALCDAY5 == 888, "no", "yes")
+
+alcohol_survey <- svydesign(
+  ids = ~v4,
+  strata = ~v3,
+  weights = ~v75,
+  data = alcohol
+)
+
+# Creates Frequency Table of variables of interest
+alcohol_table <- tbl_svysummary(alcohol_survey,
+                                include = ALCDAY5,
+                                statistic = list(all_categorical() ~ "{n_unweighted} ({p}%)"),
+                                digits = list(
+                                  ALCDAY5 ~ c(0,1)
+                                ),
+                                label = list(ALCDAY5 ~ "Alcohol consumption (30 days)"
+                                ),
+                                missing = "no"
+) %>% 
+  add_ci() %>% 
+  modify_header(
+    update = list(
+      stat_0 ~ "**Overall** N = {n_unweighted}")
+  ) %>% 
+  as_gt() %>%
+  gt::tab_header("Table 4: Alcohol Consumption in Guam BRFSS 2020") %>% 
+  gt::tab_options(
+    table.font.size = "small",
+    data_row.padding = gt::px(1)
+  )
+
+```
+
+As seen in the table below, our results match Guam estimates provided in the CDC BRFSS prevalence tool.
+
+```{r, echo = FALSE, message=FALSE}
+alcohol_table
+```
+
+
+## Appendix: Packages used
+
+```{r}
+sessionInfo()
+```
+
